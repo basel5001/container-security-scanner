@@ -1,6 +1,7 @@
-# Container Security Scanner
+![Test](https://github.com/basel5001/container-security-scanner/actions/workflows/test.yml/badge.svg)
+![Security](https://github.com/basel5001/container-security-scanner/actions/workflows/security.yml/badge.svg)
 
-![CI](https://github.com/basel5001/container-security-scanner/actions/workflows/test.yml/badge.svg)
+# Container Security Scanner
 
 A composite GitHub Action that scans container images for vulnerabilities using **Trivy** and **Grype**, and generates an SBOM with **Syft**.
 
