@@ -1,0 +1,150 @@
+name: Container Security Scanner
+description: Scan container images for vulnerabilities using Trivy + Grype and generate SBOM with Syft
+author: basel5001
+
+inputs:
+  image:
+    description: Container image to scan (e.g., nginx:latest)
+    required: true
+  severity:
+    description: Minimum severity to report (CRITICAL, HIGH, MEDIUM, LOW)
+    required: false
+    default: HIGH
+  fail-on-vuln:
+    description: Fail the workflow if vulnerabilities found
+    required: false
+    default: "true"
+  generate-sbom:
+    description: Generate SBOM with Syft
+    required: false
+    default: "true"
+  sbom-format:
+    description: SBOM output format (spdx-json, cyclonedx-json)
+    required: false
+    default: spdx-json
+  upload-results:
+    description: Upload scan results as artifacts
+    required: false
+    default: "true"
+
+outputs:
+  trivy-vulns:
+    description: Number of vulnerabilities found by Trivy
+    value: ${{ steps.trivy-count.outputs.count }}
+  grype-vulns:
+    description: Number of vulnerabilities found by Grype
+    value: ${{ steps.grype-count.outputs.count }}
+  sbom-file:
+    description: Path to generated SBOM file
+    value: ${{ steps.syft.outputs.sbom }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Trivy
+      shell: bash
+      run: |
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+    - name: Install Grype
+      shell: bash
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+    - name: Install Syft
+      if: inputs.generate-sbom == 'true'
+      shell: bash
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+    - name: Run Trivy scan
+      id: trivy
+      shell: bash
+      run: |
+        echo "::group::Trivy Vulnerability Scan"
+        trivy image \
+          --severity "${{ inputs.severity }}" \
+          --format json \
+          --output trivy-results.json \
+          "${{ inputs.image }}" || true
+        trivy image \
+          --severity "${{ inputs.severity }}" \
+          --format table \
+          "${{ inputs.image }}" || true
+        echo "::endgroup::"
+
+    - name: Count Trivy vulnerabilities
+      id: trivy-count
+      shell: bash
+      run: |
+        if [ -f trivy-results.json ]; then
+          count=$(cat trivy-results.json | python3 -c "
+        import json, sys
+        data = json.load(sys.stdin)
+        total = sum(len(r.get('Vulnerabilities', [])) for r in data.get('Results', []))
+        print(total)
+        " 2>/dev/null || echo "0")
+        else
+          count=0
+        fi
+        echo "count=$count" >> $GITHUB_OUTPUT
+        echo "Trivy found $count vulnerabilities"
+
+    - name: Run Grype scan
+      id: grype
+      shell: bash
+      run: |
+        echo "::group::Grype Vulnerability Scan"
+        grype "${{ inputs.image }}" \
+          --fail-on "${{ inputs.severity == 'CRITICAL' && 'critical' || inputs.severity == 'HIGH' && 'high' || 'medium' }}" \
+          --output json > grype-results.json 2>/dev/null || true
+        grype "${{ inputs.image }}" \
+          --output table || true
+        echo "::endgroup::"
+
+    - name: Count Grype vulnerabilities
+      id: grype-count
+      shell: bash
+      run: |
+        if [ -f grype-results.json ]; then
+          count=$(cat grype-results.json | python3 -c "
+        import json, sys
+        data = json.load(sys.stdin)
+        print(len(data.get('matches', [])))
+        " 2>/dev/null || echo "0")
+        else
+          count=0
+        fi
+        echo "count=$count" >> $GITHUB_OUTPUT
+        echo "Grype found $count vulnerabilities"
+
+    - name: Generate SBOM with Syft
+      id: syft
+      if: inputs.generate-sbom == 'true'
+      shell: bash
+      run: |
+        echo "::group::SBOM Generation"
+        syft "${{ inputs.image }}" -o "${{ inputs.sbom-format }}" > sbom.${{ inputs.sbom-format == 'spdx-json' && 'spdx.json' || 'cdx.json' }}
+        echo "sbom=sbom.${{ inputs.sbom-format == 'spdx-json' && 'spdx.json' || 'cdx.json' }}" >> $GITHUB_OUTPUT
+        echo "::endgroup::"
+
+    - name: Upload scan results
+      if: inputs.upload-results == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-scan-results
+        path: |
+          trivy-results.json
+          grype-results.json
+          sbom.*
+
+    - name: Check fail condition
+      if: inputs.fail-on-vuln == 'true'
+      shell: bash
+      run: |
+        trivy_count=${{ steps.trivy-count.outputs.count }}
+        grype_count=${{ steps.grype-count.outputs.count }}
+        if [ "$trivy_count" -gt 0 ] || [ "$grype_count" -gt 0 ]; then
+          echo "::error::Security vulnerabilities detected! Trivy: $trivy_count, Grype: $grype_count"
+          exit 1
+        fi

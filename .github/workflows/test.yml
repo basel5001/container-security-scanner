@@ -1,0 +1,64 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  scan-alpine:
+    name: Scan Alpine Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run container security scan
+        uses: ./
+        with:
+          image: alpine:3.18
+          severity: CRITICAL
+          fail-on-vuln: "false"
+          generate-sbom: "true"
+          sbom-format: spdx-json
+
+      - name: Generate summary
+        run: python3 src/summarize.py trivy-results.json grype-results.json
+
+  scan-no-sbom:
+    name: Scan Without SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run container security scan (no SBOM)
+        uses: ./
+        with:
+          image: alpine:3.18
+          severity: HIGH
+          fail-on-vuln: "false"
+          generate-sbom: "false"
+          upload-results: "false"
